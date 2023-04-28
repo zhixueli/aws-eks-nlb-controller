@@ -1,8 +1,7 @@
 locals {
   aws_alb_ingress_controller_docker_image = "public.ecr.aws/eks/aws-load-balancer-controller:v${var.aws_load_balancer_controller_version}"
   aws_load_balancer_controller_version    = var.aws_load_balancer_controller_version
-  #aws_alb_ingress_class                   = "alb"
-  aws_vpc_id                              = data.aws_vpc.selected.id
+  aws_vpc_id                              = data.aws_vpc.target.id
   aws_region_name                         = data.aws_region.current.name
   aws_iam_path_prefix                     = var.aws_iam_path_prefix == "" ? null : var.aws_iam_path_prefix
 }
@@ -30,8 +29,8 @@ provider "kubernetes" {
   }
 }
 
-data "aws_vpc" "selected" {
-  id = var.k8s_cluster_type == "eks" ? data.aws_eks_cluster.selected[0].vpc_config[0].vpc_id : var.aws_vpc_id
+data "aws_vpc" "target" {
+  id = data.aws_eks_cluster.target.vpc_config[0].vpc_id
 }
 
 data "aws_region" "current" {
@@ -40,46 +39,27 @@ data "aws_region" "current" {
 
 data "aws_caller_identity" "current" {}
 
-# The EKS cluster (if any) that represents the installation target.
-data "aws_eks_cluster" "selected" {
-  count = var.k8s_cluster_type == "eks" ? 1 : 0
-  name  = var.k8s_cluster_name
-}
-
-data "aws_iam_policy_document" "ec2_assume_role" {
-  count = var.k8s_cluster_type == "vanilla" ? 1 : 0
-  statement {
-    actions = ["sts:AssumeRole"]
-
-    principals {
-      type        = "Service"
-      identifiers = ["ec2.amazonaws.com"]
-    }
-  }
-}
-
 data "aws_iam_policy_document" "eks_oidc_assume_role" {
-  count = var.k8s_cluster_type == "eks" ? 1 : 0
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     effect  = "Allow"
     condition {
       test     = "StringEquals"
-      variable = "${replace(data.aws_eks_cluster.selected[0].identity[0].oidc[0].issuer, "https://", "")}:sub"
+      variable = "${replace(data.aws_eks_cluster.target.identity[0].oidc[0].issuer, "https://", "")}:sub"
       values = [
         "system:serviceaccount:${var.k8s_namespace}:aws-load-balancer-controller"
       ]
     }
     condition {
       test     = "StringEquals"
-      variable = "${replace(data.aws_eks_cluster.selected[0].identity[0].oidc[0].issuer, "https://", "")}:aud"
+      variable = "${replace(data.aws_eks_cluster.target.identity[0].oidc[0].issuer, "https://", "")}:aud"
       values = [
         "sts.amazonaws.com"
       ]
     }
     principals {
       identifiers = [
-        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${replace(data.aws_eks_cluster.selected[0].identity[0].oidc[0].issuer, "https://", "")}"
+        "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/${replace(data.aws_eks_cluster.target.identity[0].oidc[0].issuer, "https://", "")}"
       ]
       type = "Federated"
     }
@@ -95,7 +75,7 @@ resource "aws_iam_role" "this" {
 
   force_detach_policies = true
 
-  assume_role_policy = var.k8s_cluster_type == "vanilla" ? data.aws_iam_policy_document.ec2_assume_role[0].json : data.aws_iam_policy_document.eks_oidc_assume_role[0].json
+  assume_role_policy = data.aws_iam_policy_document.eks_oidc_assume_role.json
 }
 
 resource "aws_iam_policy" "this" {
